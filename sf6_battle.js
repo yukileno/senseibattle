@@ -1,6 +1,6 @@
 // --- Configuration ---
 const GAS_API_URL = "https://script.google.com/macros/s/AKfycbyno-Otdjr5xQnC2t3ZWZhNJAJPA3WeJLM6K52cKzJ2XuFjzL1aBHydSr29rN2PsVR5mQ/exec";
-const APP_SHEET_NAME = "wariai"; // 割合・比率用 (または社会用)
+const APP_SHEET_NAME = "shakai"; // 社会科ドリル用
 const LOCAL_STORAGE_KEY = "wariai1_sf6_save_v1"; // セーブ用
 
 let gameState = {
