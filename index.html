@@ -6,6 +6,8 @@
     <title>割合と比率 - STREET BATTLE</title>
     <!-- SF6風フォントをインポート -->
     <link href="https://fonts.googleapis.com/css2?family=Permanent+Marker&family=Teko:wght@500;700&family=Montserrat:wght@400;700;900&display=swap" rel="stylesheet">
+    <!-- SheetJS CDN (Excel / CSV パーサー) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="sf6_battle.css?v=1.0.6">
 </head>
 <body>
@@ -43,6 +45,16 @@
                         <img src="css/zangief_portrait.png" class="zangief-vs-img" />
                     </div>
                 </div>
+            </div>
+            
+            <div class="upload-container-sf6">
+                <div id="drop-zone" class="drop-zone-sf6">
+                    <span class="upload-icon">📁</span>
+                    <p class="upload-text">問題ファイル (.xlsx / .csv) をドロップ</p>
+                    <p class="upload-subtext">または ここをクリックしてファイルを選択</p>
+                    <input type="file" id="file-input" accept=".xlsx, .xls, .csv" style="display: none;" />
+                </div>
+                <div id="upload-status" class="upload-status-sf6" style="display: none;"></div>
             </div>
             
             <div class="menu-buttons-sf6">
@@ -106,48 +118,30 @@
                 <span class="combo-label">COMBOS!</span>
             </div>
             
-            <div class="problem-board">
-                <!-- Upper area: Question (left) + Diagram (right) -->
-                <div class="question-diagram-wrapper">
-                    <div class="question-container">
-                        <div id="question-text" class="question">□に入る数を答えてザンギエフをKOしろ！</div>
-                        
-                        <div class="answer-box-sf6" id="answer-box-normal">
-                            <span id="user-input" class="user-input-text"></span>
-                            <span class="cursor"></span>
-                        </div>
-                    </div>
-                    
-                    <div id="diagram-container"></div>
-                </div>
-                
-                <!-- Canvas Area (Spray Wall) - Purely for calculation -->
-                <div id="calc-area">
-                    <canvas id="calc-canvas"></canvas>
-                    <button id="btn-clear-canvas" class="btn-clear-canvas">RESET</button>
+            <div class="problem-board" id="problem-board">
+                <div class="question-container-full">
+                    <div id="question-text" class="question-text-large">問題を読み込み中です...</div>
                 </div>
             </div>
 
-            <!-- Arcade Button Numpad -->
-            <div class="numpad-sf6">
-                <button class="num-key btn-arcade color-yellow">7</button>
-                <button class="num-key btn-arcade color-yellow">8</button>
-                <button class="num-key btn-arcade color-yellow">9</button>
-                
-                <button class="num-key btn-arcade color-cyan">4</button>
-                <button class="num-key btn-arcade color-cyan">5</button>
-                <button class="num-key btn-arcade color-cyan">6</button>
-                
-                <button class="num-key btn-arcade color-pink">1</button>
-                <button class="num-key btn-arcade color-pink">2</button>
-                <button class="num-key btn-arcade color-pink">3</button>
-                
-                <button class="num-key btn-arcade color-white">0</button>
-                <button class="num-key btn-arcade color-white">.</button>
-                <button class="cmd-key btn-arcade btn-focus-toggle color-dark">ー</button>
-                
-                <button class="cmd-key btn-arcade btn-delete color-dark" style="grid-column: span 1;">DEL</button>
-                <button class="cmd-key btn-arcade btn-enter color-gold" style="grid-column: span 2;">ENTER</button>
+            <!-- 4択クイズの選択肢エリア (テンキーの代替) -->
+            <div class="quiz-options-container" id="quiz-options">
+                <button class="option-btn btn-arcade color-yellow" data-index="1">
+                    <span class="option-num">1</span>
+                    <span class="option-text">選択肢 1</span>
+                </button>
+                <button class="option-btn btn-arcade color-cyan" data-index="2">
+                    <span class="option-num">2</span>
+                    <span class="option-text">選択肢 2</span>
+                </button>
+                <button class="option-btn btn-arcade color-pink" data-index="3">
+                    <span class="option-num">3</span>
+                    <span class="option-text">選択肢 3</span>
+                </button>
+                <button class="option-btn btn-arcade color-white" data-index="4">
+                    <span class="option-num">4</span>
+                    <span class="option-text">選択肢 4</span>
+                </button>
             </div>
         </div>
 
@@ -177,6 +171,7 @@
     </div>
 
     <!-- Scripts -->
+    <script src="problems.js?v=1.0.6"></script>
     <script src="problem-generator.js?v=1.0.6"></script>
     <script src="sf6_battle.js?v=1.0.6"></script>
 </body>

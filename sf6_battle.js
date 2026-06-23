@@ -1,7 +1,7 @@
 // --- Configuration ---
 const GAS_API_URL = "https://script.google.com/macros/s/AKfycbyno-Otdjr5xQnC2t3ZWZhNJAJPA3WeJLM6K52cKzJ2XuFjzL1aBHydSr29rN2PsVR5mQ/exec";
-const APP_SHEET_NAME = "wariai"; // 割合・比率用
-const LOCAL_STORAGE_KEY = "wariai1_sf6_save_v1"; // ドメイン間干渉を防ぐためのユニークなキー
+const APP_SHEET_NAME = "wariai"; // 割合・比率用 (または社会用)
+const LOCAL_STORAGE_KEY = "wariai1_sf6_save_v1"; // セーブ用
 
 let gameState = {
     playerName: "",
@@ -13,7 +13,6 @@ let gameState = {
     rivalKOs: 0, // ザンギエフを倒した回数
     consecutiveCorrects: 0,
     currentProblem: null,
-    userInput: "",
     isTransitioning: false
 };
 
@@ -37,24 +36,28 @@ class SF6SoundManager {
         this.sounds = {};
         this.isInitialized = false;
         
-        // プリロード用のAudioオブジェクトを作成
         Object.entries(this.soundPaths).forEach(([key, path]) => {
-            this.sounds[key] = new Audio(path);
-            this.sounds[key].preload = 'auto';
-            this.sounds[key].volume = 0.4;
+            try {
+                this.sounds[key] = new Audio(path);
+                this.sounds[key].preload = 'auto';
+                this.sounds[key].volume = 0.4;
+            } catch (e) {
+                console.warn(`Audio initialization failed for ${key}:`, e);
+            }
         });
     }
 
     init() {
         if (this.isInitialized) return;
         
-        // iOS/Safariなどの自動再生制限解除のための無音再生アンロック
         const unlock = () => {
             Object.values(this.sounds).forEach(s => {
-                s.play().then(() => {
-                    s.pause();
-                    s.currentTime = 0;
-                }).catch(() => {});
+                if (s) {
+                    s.play().then(() => {
+                        s.pause();
+                        s.currentTime = 0;
+                    }).catch(() => {});
+                }
             });
             this.isInitialized = true;
             window.removeEventListener('click', unlock);
@@ -70,7 +73,6 @@ class SF6SoundManager {
         
         try {
             if (clone) {
-                // 連続再生（多段ヒットなど）に対応するため、クローンして再生
                 const cloned = s.cloneNode();
                 cloned.volume = s.volume;
                 cloned.play().catch(e => console.warn("Audio playback failed (file might be missing):", e));
@@ -79,19 +81,13 @@ class SF6SoundManager {
                 s.play().catch(e => console.warn("Audio playback failed (file might be missing):", e));
             }
         } catch (e) {
-            console.error("Failed to play sound:", key, e);
+            console.warn("Failed to play sound:", key, e);
         }
     }
 
-    // 各個別アクションメソッド
-    playCorrect() {
-        this.play('correct');
-    }
-
-    playWrong() {
-        this.play('wrong');
-    }
-
+    playCorrect() { this.play('correct'); }
+    playWrong() { this.play('wrong'); }
+    
     playHadoukenFire(type = 'blue') {
         if (type === 'purple') {
             this.play('fireEx');
@@ -111,7 +107,6 @@ class SF6SoundManager {
     }
 
     playCombo(count) {
-        // combo.mp3がロードできない（ファイルがない）場合は、自動的にcorrect.mp3を鳴らすフォールバック処理
         const comboAudio = this.sounds['combo'];
         if (comboAudio) {
             const onError = () => {
@@ -120,7 +115,6 @@ class SF6SoundManager {
             };
             comboAudio.addEventListener('error', onError);
             
-            // プレイを試みる。ファイルがない場合は警告が出るが、onErrorが発火してcorrectが鳴る
             comboAudio.play().then(() => {
                 comboAudio.pause();
                 comboAudio.currentTime = 0;
@@ -133,17 +127,9 @@ class SF6SoundManager {
         }
     }
 
-    playKOExplosion() {
-        this.play('ko');
-    }
-
-    playVictory() {
-        this.play('victory', false); // リザルトBGMは重ならなくてよいのでclone=false
-    }
-
-    playDefeat() {
-        this.play('defeat', false); // リザルトBGMは重ならなくてよいのでclone=false
-    }
+    playKOExplosion() { this.play('ko'); }
+    playVictory() { this.play('victory', false); }
+    playDefeat() { this.play('defeat', false); }
 }
 
 const sound = new SF6SoundManager();
@@ -166,16 +152,20 @@ const dom = {
     currentScoreDisplay: document.getElementById('current-score'),
     questionText: document.getElementById('question-text'),
     
-    // 回答枠関連
-    answerBoxNormal: document.getElementById('answer-box-normal'),
-    userInputBox: document.getElementById('user-input'),
+    // Excel/CSVアップロード関連
+    dropZone: document.getElementById('drop-zone'),
+    fileInput: document.getElementById('file-input'),
+    uploadStatus: document.getElementById('upload-status'),
+
+    // 4択クイズ用
+    quizOptionsContainer: document.getElementById('quiz-options'),
+    problemBoard: document.getElementById('problem-board'), // 正誤判定フラッシュ用
     
     finalScoreValue: document.getElementById('final-score-value'),
     resultStatus: document.getElementById('result-status'),
     savingStatus: document.getElementById('saving-status'),
     rankingList: document.getElementById('ranking-list'),
     btnResume: document.getElementById('btn-resume'),
-    diagramContainer: document.getElementById('diagram-container'),
     comboContainer: document.getElementById('combo-container'),
     comboCount: document.getElementById('combo-count'),
     
@@ -185,120 +175,298 @@ const dom = {
     hadoukenBall: document.getElementById('hadouken-ball'),
     hitSpark: document.getElementById('hit-spark'),
     hadoukenText: document.getElementById('hadouken-text'),
-    calcArea: document.getElementById('calc-area'),
     battleStage: document.getElementById('battle-stage')
 };
 
+// URLパラメータ取得用ヘルパー
+function getQueryParam(name) {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get(name);
+}
+
 // --- Initialization ---
 function init() {
-    // 割合と比率の単一モードに設定
-    window.ProblemGenerator.topicName = "割合と比率";
-    if (dom.topicNameDisplay) dom.topicNameDisplay.textContent = window.ProblemGenerator.topicName;
-    document.title = window.ProblemGenerator.topicName;
+    console.log("Game initializing...");
     
-    // Load saved name
-    const savedName = localStorage.getItem('math_player_name');
-    if(savedName && dom.playerNameInput) dom.playerNameInput.value = savedName;
+    try {
+        window.ProblemGenerator.topicName = "歴史・社会ドリル";
+        if (dom.topicNameDisplay) dom.topicNameDisplay.textContent = window.ProblemGenerator.topicName;
+        document.title = window.ProblemGenerator.topicName;
+    } catch (e) { console.error("Error setting title:", e); }
     
-    // Attach Handlers (Nullチェックを追加してJSのクラッシュを絶対に防止)
-    const btnStart = document.getElementById('btn-start');
-    if (btnStart) btnStart.addEventListener('click', startGame);
+    try {
+        const savedName = localStorage.getItem('math_player_name');
+        if(savedName && dom.playerNameInput) dom.playerNameInput.value = savedName;
+    } catch (e) { console.error("Error loading name:", e); }
     
-    if (dom.btnResume) {
-        dom.btnResume.addEventListener('click', resumeGame);
-    }
+    try {
+        const btnStart = document.getElementById('btn-start');
+        if (btnStart) btnStart.addEventListener('click', startGame);
+    } catch (e) { console.error("Error binding start button:", e); }
     
-    const btnShowRanking = document.getElementById('btn-show-ranking');
-    if (btnShowRanking) btnShowRanking.addEventListener('click', showRanking);
+    try {
+        if (dom.btnResume) {
+            dom.btnResume.addEventListener('click', resumeGame);
+        }
+    } catch (e) { console.error("Error binding resume button:", e); }
     
-    const btnRetry = document.getElementById('btn-retry');
-    if (btnRetry) {
-        btnRetry.addEventListener('click', () => {
-            checkResumeData();
-            switchScreen('start');
-        });
-    }
+    try {
+        const btnShowRanking = document.getElementById('btn-show-ranking');
+        if (btnShowRanking) btnShowRanking.addEventListener('click', showRanking);
+    } catch (e) { console.error("Error binding ranking button:", e); }
     
-    const btnResultRanking = document.getElementById('btn-result-ranking');
-    if (btnResultRanking) btnResultRanking.addEventListener('click', showRanking);
+    try {
+        const btnRetry = document.getElementById('btn-retry');
+        if (btnRetry) {
+            btnRetry.addEventListener('click', () => {
+                checkResumeData();
+                switchScreen('start');
+            });
+        }
+    } catch (e) { console.error("Error binding retry button:", e); }
     
-    const btnBackHome = document.getElementById('btn-back-home');
-    if (btnBackHome) {
-        btnBackHome.addEventListener('click', () => {
-            checkResumeData();
-            switchScreen('start');
-        });
-    }
+    try {
+        const btnResultRanking = document.getElementById('btn-result-ranking');
+        if (btnResultRanking) btnResultRanking.addEventListener('click', showRanking);
+    } catch (e) { console.error("Error binding result ranking button:", e); }
+    
+    try {
+        const btnBackHome = document.getElementById('btn-back-home');
+        if (btnBackHome) {
+            btnBackHome.addEventListener('click', () => {
+                checkResumeData();
+                switchScreen('start');
+            });
+        }
+    } catch (e) { console.error("Error binding back home button:", e); }
 
-    // Numpad Handlers
-    document.querySelectorAll('.num-key').forEach(btn => {
-        btn.addEventListener('click', () => {
-            typeChar(btn.textContent.trim());
-            triggerButtonEffect(btn);
-        });
-    });
-    
-    const btnDelete = document.querySelector('.btn-delete');
-    if (btnDelete) {
-        btnDelete.addEventListener('click', (e) => {
-            backspace();
-            triggerButtonEffect(e.currentTarget);
-        });
-    }
-    
-    const btnEnter = document.querySelector('.btn-enter');
-    if (btnEnter) {
-        btnEnter.addEventListener('click', (e) => {
-            submitAnswer();
-            triggerButtonEffect(e.currentTarget);
-        });
-    }
-    
-    // Disable "あまり" button as it's not needed for ratio mode
-    const btnFocusToggle = document.querySelector('.btn-focus-toggle');
-    if (btnFocusToggle) {
-        btnFocusToggle.style.opacity = '0.5';
-        btnFocusToggle.style.pointerEvents = 'none';
-        btnFocusToggle.textContent = 'ー';
-    }
+    try {
+        const isDebug = getQueryParam('debug') === '1';
+        const uploadContainer = document.querySelector('.upload-container-sf6');
+        if (uploadContainer) {
+            uploadContainer.style.display = isDebug ? 'block' : 'none';
+        }
+    } catch (e) { console.error("Error setting debug container:", e); }
 
-    // Keyboard Input Handler (For Chromebook / PC)
-    window.addEventListener('keydown', (e) => {
-        if(screens.game && screens.game.classList.contains('active')) {
-            if(/[0-9\.]/.test(e.key)) {
-                typeChar(e.key);
-                findAndFlashArcadeButton(e.key);
-            } else if(e.key === 'Backspace') {
-                backspace();
-                findAndFlashArcadeButton('DEL');
-            } else if(e.key === 'Enter') {
-                submitAnswer();
-                findAndFlashArcadeButton('ENTER');
+    try { initUploadEvents(); } catch (e) { console.error("Error in initUploadEvents:", e); }
+    try { initQuizOptionEvents(); } catch (e) { console.error("Error in initQuizOptionEvents:", e); }
+
+    try {
+        window.addEventListener('keydown', (e) => {
+            if(screens.game && screens.game.classList.contains('active')) {
+                if (/[1-4]/.test(e.key)) {
+                    const optIndex = parseInt(e.key, 10) - 1;
+                    const buttons = dom.quizOptionsContainer.querySelectorAll('.option-btn');
+                    if (buttons[optIndex]) {
+                        buttons[optIndex].click();
+                    }
+                }
+            } else if (screens.start && screens.start.classList.contains('active') && e.key === 'Enter') {
+                const btnStart = document.getElementById('btn-start');
+                if (btnStart && !btnStart.disabled) {
+                    startGame();
+                }
             }
-        } else if (screens.start && screens.start.classList.contains('active') && e.key === 'Enter') {
-            startGame();
+        });
+    } catch (e) { console.error("Error binding keydown:", e); }
+
+    try { checkResumeData(); } catch (e) { console.error("Error checking resume data:", e); }
+
+    try {
+        loadProblemsChain();
+    } catch (e) {
+        console.error("Error loading problems chain:", e);
+        // ロードチェーン失敗時は強制的にデフォルト問題で初期化
+        try {
+            window.ProblemGenerator.init();
+            const btnStart = document.getElementById('btn-start');
+            if (btnStart) {
+                btnStart.disabled = false;
+                btnStart.textContent = "BATTLE START";
+            }
+        } catch (innerEx) {
+            console.error("Critical: failed to fallback default problems:", innerEx);
+        }
+    }
+}
+
+// --- Excel/CSV upload logic ---
+function initUploadEvents() {
+    const dropZone = dom.dropZone;
+    const fileInput = dom.fileInput;
+
+    if (!dropZone || !fileInput) return;
+
+    dropZone.addEventListener('click', () => {
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleUploadedFile(e.target.files[0]);
         }
     });
 
-    initCanvas();
-    checkResumeData();
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('dragover');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) {
+            handleUploadedFile(e.dataTransfer.files[0]);
+        }
+    });
 }
 
-// --- Button Flash Effects ---
+function handleUploadedFile(file) {
+    if (!dom.uploadStatus) return;
+
+    dom.uploadStatus.style.display = 'block';
+    dom.uploadStatus.textContent = "ファイルを読み込み中...";
+    dom.uploadStatus.style.borderLeftColor = "#ff0077";
+    dom.uploadStatus.style.background = "rgba(255, 0, 119, 0.1)";
+
+    window.ProblemGenerator.loadFromFile(file, (res) => {
+        if (res.success) {
+            dom.uploadStatus.textContent = `成功：${res.count} 問の問題データをロードしました！`;
+            dom.uploadStatus.style.borderLeftColor = "#00ff88";
+            dom.uploadStatus.style.background = "rgba(0, 255, 136, 0.1)";
+            
+            const textEl = dom.dropZone.querySelector('.upload-text');
+            if (textEl) textEl.textContent = `適用中: ${file.name}`;
+        } else {
+            dom.uploadStatus.textContent = `エラー: ${res.error}`;
+            dom.uploadStatus.style.borderLeftColor = "#ff005f";
+            dom.uploadStatus.style.background = "rgba(255, 0, 95, 0.1)";
+        }
+    });
+}
+
+// --- フォールバックチェーン付問題自動ロード ---
+function loadProblemsChain() {
+    const btnStart = document.getElementById('btn-start');
+    if (btnStart) {
+        btnStart.disabled = true;
+        btnStart.textContent = "LOADING PROBLEMS...";
+    }
+
+    if (dom.uploadStatus) {
+        dom.uploadStatus.style.display = 'block';
+        dom.uploadStatus.textContent = "問題データを読み込んでいます...";
+        dom.uploadStatus.style.borderLeftColor = "#00f3ff";
+        dom.uploadStatus.style.background = "rgba(0, 243, 255, 0.1)";
+    }
+
+    // 0. window.CSV_DATA_INPUT が定義されていれば最優先で読み込む (CORS制限を回避したローカル自動読み込み)
+    if (window.CSV_DATA_INPUT && window.CSV_DATA_INPUT.trim()) {
+        try {
+            const jsonData = window.ProblemGenerator.parseCSVLocally(window.CSV_DATA_INPUT);
+            const count = window.ProblemGenerator.setProblems(jsonData);
+            if (count > 0) {
+                onProblemsLoaded(`自動適用：problems.js から ${count} 問ロードしました。`);
+                return;
+            }
+        } catch (e) {
+            console.warn("Failed to parse window.CSV_DATA_INPUT:", e);
+        }
+    }
+
+    // 1. problems.xlsx の読み込み試行
+    window.ProblemGenerator.loadLocalExcelFile('problems.xlsx', (resXlsx) => {
+        if (resXlsx.success) {
+            onProblemsLoaded(`自動適用：problems.xlsx から ${resXlsx.count} 問ロードしました。`);
+        } else {
+            // 2. 失敗したら problems.csv の読み込み試行
+            window.ProblemGenerator.loadLocalExcelFile('problems.csv', (resCsv) => {
+                if (resCsv.success) {
+                    onProblemsLoaded(`自動適用：problems.csv から ${resCsv.count} 問ロードしました。`);
+                } else {
+                    // 3. 失敗したら GAS から読み込み試行
+                    if (GAS_API_URL !== "YOUR_GAS_ENDPOINT_URL_HERE") {
+                        window.ProblemGenerator.loadFromGAS(GAS_API_URL, (resGas) => {
+                            if (resGas.success) {
+                                onProblemsLoaded(`スプレッドシートから ${resGas.count} 問ロードしました。`);
+                            } else {
+                                useDefaultProblems("既定の問題（10問）を適用しました。");
+                            }
+                        });
+                    } else {
+                        useDefaultProblems("既定の問題（10問）を適用しました。");
+                    }
+                }
+            });
+        }
+    });
+
+    function onProblemsLoaded(msg) {
+        console.log("Problems loaded:", msg);
+        if (btnStart) {
+            btnStart.disabled = false;
+            btnStart.textContent = "BATTLE START";
+        }
+        if (dom.uploadStatus) {
+            dom.uploadStatus.textContent = msg;
+            dom.uploadStatus.style.borderLeftColor = "#00ff88";
+            dom.uploadStatus.style.background = "rgba(0, 255, 136, 0.1)";
+            if (getQueryParam('debug') !== '1') {
+                setTimeout(() => {
+                    dom.uploadStatus.style.display = 'none';
+                }, 4000);
+            }
+        }
+    }
+
+    function useDefaultProblems(msg) {
+        console.log("Fallback to default problems");
+        window.ProblemGenerator.init(); // デフォルト問題で初期化
+        if (btnStart) {
+            btnStart.disabled = false;
+            btnStart.textContent = "BATTLE START";
+        }
+        if (dom.uploadStatus) {
+            dom.uploadStatus.textContent = msg;
+            dom.uploadStatus.style.borderLeftColor = "#ff8c00";
+            dom.uploadStatus.style.background = "rgba(255, 140, 0, 0.1)";
+            if (getQueryParam('debug') !== '1') {
+                setTimeout(() => {
+                    dom.uploadStatus.style.display = 'none';
+                }, 4000);
+            }
+        }
+    }
+}
+
+// ボタンをクリックした際の軽快なエフェクト（クラスの付け外し）
 function triggerButtonEffect(btn) {
     if (!btn) return;
-    btn.style.transform = 'scale(0.9) skewX(-8deg) translateY(2px)';
+    btn.classList.remove('active');
+    void btn.offsetWidth; // リフロー発生によるアニメーション再トリガー
+    btn.classList.add('active');
+    
     setTimeout(() => {
-        btn.style.transform = '';
-    }, 80);
+        btn.classList.remove('active');
+    }, 150);
 }
 
-function findAndFlashArcadeButton(keyChar) {
-    const buttons = document.querySelectorAll('.btn-arcade');
-    buttons.forEach(btn => {
-        if (btn.textContent.trim() === keyChar) {
+// --- 4択ボタン初期化 ---
+function initQuizOptionEvents() {
+    if (!dom.quizOptionsContainer) return;
+    
+    const buttons = dom.quizOptionsContainer.querySelectorAll('.option-btn');
+    console.log(`Binding events to ${buttons.length} quiz buttons.`);
+    buttons.forEach((btn, idx) => {
+        btn.addEventListener('click', () => {
+            console.log(`Option ${idx + 1} clicked`);
             triggerButtonEffect(btn);
-        }
+            submitAnswer(idx);
+        });
     });
 }
 
@@ -312,11 +480,10 @@ function switchScreen(screenName) {
 
 // --- Game Logic ---
 function startGame() {
-    sound.init(); // 音声コンテキストの初期化
+    sound.init();
     const name = (dom.playerNameInput ? dom.playerNameInput.value.trim() : 'CHALLENGER') || 'CHALLENGER';
     localStorage.setItem('math_player_name', name);
     
-    // 新規スタート時はセーブデータを消去
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     
     gameState = {
@@ -329,7 +496,6 @@ function startGame() {
         rivalKOs: 0,
         consecutiveCorrects: 0,
         currentProblem: null,
-        userInput: "",
         isTransitioning: false
     };
     
@@ -341,35 +507,15 @@ function startGame() {
     
     if (dom.comboContainer) dom.comboContainer.style.display = 'none';
     
-    // キャラクターと演出のリセット
-    if (dom.ryuChar) {
-        dom.ryuChar.className = 'battle-character ryu-idle';
-    }
-    if (dom.zangiefChar) {
-        dom.zangiefChar.className = 'battle-character zangief-idle';
-    }
-    if (dom.hadoukenBall) {
-        dom.hadoukenBall.className = 'hadouken-fireball';
-    }
-    if (dom.hitSpark) {
-        dom.hitSpark.className = 'hit-spark';
-    }
-    if (dom.hadoukenText) {
-        dom.hadoukenText.className = 'hadouken-text';
-    }
-    if (dom.calcArea) {
-        dom.calcArea.classList.remove('screen-shake');
-    }
-    if (dom.battleStage) {
-        dom.battleStage.classList.remove('screen-shake');
-    }
+    if (dom.ryuChar) dom.ryuChar.className = 'battle-character ryu-idle';
+    if (dom.zangiefChar) dom.zangiefChar.className = 'battle-character zangief-idle';
+    if (dom.hadoukenBall) dom.hadoukenBall.className = 'hadouken-fireball';
+    if (dom.hitSpark) dom.hitSpark.className = 'hit-spark';
+    if (dom.hadoukenText) dom.hadoukenText.className = 'hadouken-text';
+    if (dom.battleStage) dom.battleStage.classList.remove('screen-shake');
     
     nextProblem();
     switchScreen('game');
-    setTimeout(() => {
-        resizeCanvas();
-        clearCanvas();
-    }, 10);
 }
 
 function updateLivesDisplay() {
@@ -396,401 +542,225 @@ function updateRivalLivesDisplay() {
 
 function nextProblem() {
     saveGameProgress();
-    gameState.currentProblem = window.ProblemGenerator.generate();
-    if(dom.questionText && gameState.currentProblem.questionText) {
-        dom.questionText.textContent = gameState.currentProblem.questionText;
-    }
     
-    clearCanvas();
-    gameState.userInput = "";
-    updateInputDisplay();
-    renderDiagram();
-}
-
-// --- Canvas Drawing Logic (Neon Spray Pen) ---
-let ctx = null;
-
-function initCanvas() {
-    const canvas = document.getElementById('calc-canvas');
-    if (!canvas) return;
-    ctx = canvas.getContext('2d');
-    
-    let isDrawing = false;
-    
-    const getPos = (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
-        return { 
-            x: (clientX - rect.left) * scaleX, 
-            y: (clientY - rect.top) * scaleY 
-        };
-    };
-
-    const startDrawing = (e) => {
-        e.preventDefault();
-        isDrawing = true;
-        const pos = getPos(e);
-        ctx.beginPath();
-        ctx.moveTo(pos.x, pos.y);
-    };
-
-    const draw = (e) => {
-        if (!isDrawing) return;
-        e.preventDefault();
-        const pos = getPos(e);
-        ctx.lineTo(pos.x, pos.y);
-        ctx.stroke();
-    };
-
-    const stopDrawing = () => {
-        if(isDrawing) {
-            ctx.beginPath();
+    try {
+        gameState.currentProblem = window.ProblemGenerator.generate();
+        console.log("Current problem loaded:", gameState.currentProblem);
+        
+        if (dom.questionText && gameState.currentProblem && gameState.currentProblem.questionText) {
+            dom.questionText.textContent = gameState.currentProblem.questionText;
+        } else if (dom.questionText) {
+            dom.questionText.textContent = "問題データを読み込めませんでした。";
         }
-        isDrawing = false;
-    };
-
-    canvas.addEventListener('mousedown', startDrawing);
-    canvas.addEventListener('mousemove', draw);
-    window.addEventListener('mouseup', stopDrawing);
-    canvas.addEventListener('mouseout', stopDrawing);
-    
-    canvas.addEventListener('touchstart', startDrawing, {passive: false});
-    canvas.addEventListener('touchmove', draw, {passive: false});
-    window.addEventListener('touchend', stopDrawing);
-    window.addEventListener('touchcancel', stopDrawing);
-
-    const btnClear = document.getElementById('btn-clear-canvas');
-    if (btnClear) btnClear.addEventListener('click', clearCanvas);
-    window.addEventListener('resize', resizeCanvas);
-}
-
-function resizeCanvas() {
-    const canvas = document.getElementById('calc-canvas');
-    if(!canvas) return;
-    const rect = canvas.parentElement.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-        canvas.width = rect.width;
-        canvas.height = rect.height;
-        if(ctx) {
-            ctx.lineWidth = 2.5; // 細い線幅に変更して視認性を向上
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-            ctx.strokeStyle = '#ffe600'; 
-            ctx.shadowColor = 'transparent'; // 光彩ににじみが生じないように非表示
-            ctx.shadowBlur = 0; // 光彩を無効化して太さを一定に保つ
-        }
+        
+        updateQuizOptionsUI();
+    } catch (e) {
+        console.error("Failed to generate next problem:", e);
     }
 }
 
-function clearCanvas() {
-    const canvas = document.getElementById('calc-canvas');
-    if(!canvas || !ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-}
-
-function typeChar(char) {
-    if(gameState.isTransitioning) return;
+function updateQuizOptionsUI() {
+    if (!dom.quizOptionsContainer || !gameState.currentProblem) return;
     
-    if(char === '.' && gameState.userInput.includes('.')) return;
-    if(gameState.userInput.replace('.', '').length >= 5) return;
+    const buttons = dom.quizOptionsContainer.querySelectorAll('.option-btn');
+    const options = gameState.currentProblem.options;
     
-    gameState.userInput += char;
-    updateInputDisplay();
-}
-
-function backspace() {
-    if(gameState.isTransitioning) return;
-    gameState.userInput = gameState.userInput.slice(0, -1);
-    updateInputDisplay();
-}
-
-function updateInputDisplay() {
-    if (dom.userInputBox) dom.userInputBox.textContent = gameState.userInput;
-    
-    const svgInputText = document.getElementById('svg-input-text');
-    if (svgInputText) {
-        const target = gameState.currentProblem?.params?.target;
-        if (target === 'ratio') {
-            svgInputText.textContent = (gameState.userInput || "?") + "倍";
+    buttons.forEach((btn, idx) => {
+        const textEl = btn.querySelector('.option-text');
+        if (options && options[idx] !== undefined) {
+            btn.style.display = 'flex';
+            if (textEl) textEl.textContent = options[idx];
         } else {
-            svgInputText.textContent = (gameState.userInput || "?") + "m";
+            btn.style.display = 'none';
         }
-    }
+    });
 }
 
-// --- SVG Diagram Rendering ---
-function renderDiagram() {
-    if (!gameState.currentProblem || !gameState.currentProblem.params || !dom.diagramContainer) return;
-    const params = gameState.currentProblem.params;
-    const target = params.target;
-
-    let labelA = params.colorA; // 左の箱 (白など)
-    let labelB = params.colorB; // 右の箱 (赤など)
-    let unit = params.unit; // "m"
-
-    let valAStr = params.valueA + unit;
-    let valBStr = params.valueB + unit;
-    let ratioStr = params.ratio + "倍";
-
-    let valueAClass = "";
-    let valueBClass = "";
-    let ratioClass = "";
-
-    let textA = valAStr;
-    let textB = valBStr;
-    let textRatio = ratioStr;
-
-    if (target === "base") {
-        textA = "";
-        valueAClass = "target-field";
-    } else if (target === "compare") {
-        textB = "";
-        valueBClass = "target-field";
-    } else if (target === "ratio") {
-        textRatio = "";
-        ratioClass = "target-field";
+// 4択ボタン選択時の正誤判定
+function submitAnswer(selectedIndex) {
+    if (gameState.isTransitioning) {
+        console.log("submitAnswer: system is transitioning, ignore click");
+        return;
     }
-
-    const svgHTML = `
-    <svg class="ratio-diagram-svg" viewBox="0 0 440 260" xmlns="http://www.w3.org/2000/svg">
-        <!-- もとにする量（左の四角） -->
-        <g transform="translate(40, 60)">
-            <rect class="diagram-box" x="0" y="0" width="110" height="60" rx="3" />
-            <text class="diagram-text-label" x="55" y="34">${labelA}</text>
-        </g>
-        
-        <!-- 比べる量（右の四角） -->
-        <g transform="translate(290, 60)">
-            <rect class="diagram-box" x="0" y="0" width="110" height="60" rx="3" />
-            <text class="diagram-text-label" x="55" y="34">${labelB}</text>
-        </g>
-
-        <!-- もとにする量の下の数値 -->
-        <g transform="translate(40, 130)">
-            ${target === "base" ? `
-                <rect class="diagram-input-box ${valueAClass}" x="5" y="5" width="100" height="40" rx="4" />
-                <text id="svg-input-text" class="diagram-input-text" x="55" y="30">${gameState.userInput || "?"}m</text>
-            ` : `
-                <text class="diagram-text-value" x="55" y="28">${textA}</text>
-            `}
-        </g>
-
-        <!-- 比べる量の下の数値 -->
-        <g transform="translate(290, 130)">
-            ${target === "compare" ? `
-                <rect class="diagram-input-box ${valueBClass}" x="5" y="5" width="100" height="40" rx="4" />
-                <text id="svg-input-text" class="diagram-input-text" x="55" y="30">${gameState.userInput || "?"}m</text>
-            ` : `
-                <text class="diagram-text-value" x="55" y="28">${textB}</text>
-            `}
-        </g>
-
-        <!-- 右向きの矢印 (二重描きによる同化防止) -->
-        <g class="diagram-arrow-group">
-            <!-- 矢印の黒縁 (太さ14px) -->
-            <path class="diagram-arrow-line-shadow" d="M 160,90 H 270" />
-            <polygon class="diagram-arrow-head-shadow" points="259,75 279,90 259,105" />
-            
-            <!-- 矢印のホワイト本体 (太さ6px) -->
-            <path class="diagram-arrow-line" d="M 160,90 H 270" />
-            <polygon class="diagram-arrow-head" points="262,80 276,90 262,100" />
-        </g>
-
-        <!-- 割合（矢印の上） -->
-        <g transform="translate(170, 20)">
-            ${target === "ratio" ? `
-                <rect class="diagram-input-box ${ratioClass}" x="5" y="5" width="90" height="40" rx="4" />
-                <text id="svg-input-text" class="diagram-input-text" x="50" y="30">${gameState.userInput || "?"}倍</text>
-            ` : `
-                <text class="diagram-text-value" style="fill: var(--neon-yellow);" x="50" y="28">${textRatio}</text>
-            `}
-        </g>
-    </svg>
-    `;
-
-    dom.diagramContainer.innerHTML = svgHTML;
-}
-
-function submitAnswer() {
-    if (gameState.isTransitioning) return;
-    if (!gameState.userInput) return;
     
-    let isCorrect = false;
-    const activeBox = dom.answerBoxNormal;
+    // 連打防止ガードをかける
+    gameState.isTransitioning = true;
     
-    const inputVal = Number(gameState.userInput);
-    const expectedVal = Number(gameState.currentProblem.answerText);
-    
-    isCorrect = Math.abs(inputVal - expectedVal) < 1e-9;
-    
-    if (activeBox) activeBox.classList.remove('correct', 'wrong');
-    // Force reflow
-    if (activeBox) void activeBox.offsetWidth;
-
-    if(isCorrect) {
-        gameState.isTransitioning = true;
-        if (activeBox) activeBox.classList.add('correct');
-        const scoreGain = (window.ProblemGenerator.mode === 'ratio') ? 10 : 20;
-        gameState.score += scoreGain;
-        if (dom.currentScoreDisplay) dom.currentScoreDisplay.textContent = gameState.rivalKOs;
-        
-        gameState.consecutiveCorrects += 1;
-        updateComboDisplay();
-        
-        // プレイヤーのライフ回復判定
-        if (gameState.consecutiveCorrects % 5 === 0) {
-            if (gameState.lives < 3) {
-                gameState.lives = 3;
-                updateLivesDisplay();
-            }
-        }
-        
-        // --- ダメージ倍率（クリティカル）判定 ---
-        let dmg = 1;
-        let pwrType = 'blue'; // 'blue' (通常), 'purple' (強), 'red' (クリティカル)
-        let textVal = 'HADOUKEN!';
-        
-        const rand = Math.random();
-        if (rand < 0.12) { // 12%の確率で3ダメージ (灼熱波動拳)
-            dmg = 3;
-            pwrType = 'red';
-            textVal = 'SHAKUNETSU!';
-        } else if (rand < 0.32) { // 20%の確率で2ダメージ (EX波動拳)
-            dmg = 2;
-            pwrType = 'purple';
-            textVal = 'EX HADOUKEN!';
-        }
-
-        // 成功音と波動拳発射音の再生
-        sound.playCorrect();
-        sound.playHadoukenFire(pwrType);
-
-        // --- 波動拳バトル演出開始 ---
-        // 1. スーパーアーツ風暗転/フラッシュ演出
-        if (dom.battleStage && pwrType !== 'blue') {
-            dom.battleStage.classList.add('stage-darken-' + pwrType);
-        }
-        // 2. リュウが波動拳のポーズをとる
-        if (dom.ryuChar) {
-            dom.ryuChar.className = 'battle-character ryu-hadouken';
-        }
-        // 3. 巨大テキストカットイン (文字とタイプ別クラスを設定)
-        if (dom.hadoukenText) {
-            dom.hadoukenText.textContent = textVal;
-            dom.hadoukenText.className = 'hadouken-text text-' + pwrType + ' hadouken-text-active';
-        }
-        // 4. 波動拳の弾を撃ち出す (タイプ別クラスを設定)
-        if (dom.hadoukenBall) {
-            dom.hadoukenBall.className = 'hadouken-fireball hadouken-' + pwrType + ' hadouken-active';
-        }
-
-        // 1ヒットごとの被弾アクション、スパーク、画面揺れ、ライフ減少を実行する共通処理
-        const triggerHit = (damageAmount) => {
-            // ザンギエフ被弾アクション
-            if (dom.zangiefChar) {
-                dom.zangiefChar.classList.remove('zangief-idle', 'zangief-damage');
-                void dom.zangiefChar.offsetWidth; // リフロー
-                dom.zangiefChar.classList.add('zangief-damage');
-            }
-            // ヒットスパーク
-            if (dom.hitSpark) {
-                dom.hitSpark.className = 'hit-spark spark-' + pwrType;
-                void dom.hitSpark.offsetWidth; // リフロー
-                dom.hitSpark.classList.add('spark-active');
-            }
-            // 画面揺れ (ダメージ量に応じて揺れ幅を変更)
-            if (dom.battleStage) {
-                let shakeClass = 'screen-shake';
-                if (pwrType === 'purple') shakeClass = 'screen-shake-medium';
-                else if (pwrType === 'red') shakeClass = 'screen-shake-heavy';
-                
-                dom.battleStage.classList.remove('screen-shake', 'screen-shake-medium', 'screen-shake-heavy');
-                void dom.battleStage.offsetWidth; // リフロー
-                dom.battleStage.classList.add(shakeClass);
-            }
-            // 打撃音の再生
-            sound.playHit(pwrType);
-            
-            // ライフ減少
-            gameState.rivalLives = Math.max(0, gameState.rivalLives - damageAmount);
-            updateRivalLivesDisplay();
-        };
-
-        // タイプ別多段ヒット処理 (EXは2ヒット、灼熱は3ヒット)
-        if (pwrType === 'blue') {
-            // 通常: 400ms後に1ヒット
-            setTimeout(() => triggerHit(1), 400);
-        } else if (pwrType === 'purple') {
-            // EX: 380ms後と520ms後にそれぞれ1ヒット (合計2ヒット・2ダメ)
-            setTimeout(() => triggerHit(1), 380);
-            setTimeout(() => triggerHit(1), 520);
-        } else if (pwrType === 'red') {
-            // 灼熱: 320ms後、470ms後、620ms後にそれぞれ1ヒット (合計3ヒット・3ダメ)
-            setTimeout(() => triggerHit(1), 320);
-            setTimeout(() => triggerHit(1), 470);
-            setTimeout(() => triggerHit(1), 620);
-        }
-
-        // クリーンアップ遅延時間 (演出タイプに応じて調整)
-        let cleanupDelay = 1000;
-        if (pwrType === 'purple') cleanupDelay = 1100;
-        else if (pwrType === 'red') cleanupDelay = 1250;
-
-        // クリーンアップ処理 (演出が完全に終わって元の状態に戻す)
-        setTimeout(() => {
-            // キャラクターや演出クラスのリセット
-            if (dom.ryuChar) dom.ryuChar.className = 'battle-character ryu-idle';
-            if (dom.zangiefChar) dom.zangiefChar.className = 'battle-character zangief-idle';
-            if (dom.hadoukenBall) dom.hadoukenBall.className = 'hadouken-fireball';
-            if (dom.hitSpark) dom.hitSpark.className = 'hit-spark';
-            if (dom.hadoukenText) {
-                dom.hadoukenText.className = 'hadouken-text';
-                dom.hadoukenText.textContent = 'HADOUKEN!';
-            }
-            if (dom.battleStage) dom.battleStage.className = 'battle-stage-area';
-            if (activeBox) activeBox.classList.remove('correct');
-
-            // ザンギエフ撃破判定と次の問題への移行
-            if (gameState.rivalLives <= 0) {
-                gameState.rivalKOs += 1;
-                if (dom.currentScoreDisplay) dom.currentScoreDisplay.textContent = gameState.rivalKOs;
-                sound.playKOExplosion();
-
-                gameState.stage += 1;
-                gameState.rivalMaxLives = Math.min(8, 4 + gameState.stage); 
-                gameState.rivalLives = gameState.rivalMaxLives;
-                
-                if (dom.gameStageDisplay) dom.gameStageDisplay.textContent = gameState.stage;
-                updateRivalLivesDisplay();
-            }
-            
+    try {
+        console.log(`submitAnswer: selected index ${selectedIndex}`);
+        if (!gameState.currentProblem) {
+            console.warn("submitAnswer: currentProblem is null! Attempting to force next problem.");
             gameState.isTransitioning = false;
             nextProblem();
-        }, cleanupDelay);
-
-    } else {
-        sound.playWrong();
-        if (activeBox) activeBox.classList.add('wrong');
-        gameState.lives -= 1;
-        gameState.consecutiveCorrects = 0; 
-        updateComboDisplay();
-        updateLivesDisplay();
-        
-        if (gameState.lives <= 0) {
-            setTimeout(() => {
-                if (activeBox) activeBox.classList.remove('wrong');
-                endGame();
-            }, 300);
-        } else {
-            gameState.userInput = "";
-            updateInputDisplay();
-            setTimeout(() => {
-                if (activeBox) activeBox.classList.remove('wrong');
-            }, 300);
+            return;
         }
+
+        let isCorrect = false;
+        const activeBox = dom.problemBoard; // 社会用大画面ボード全体をフラッシュ対象にする
+        
+        isCorrect = (gameState.currentProblem.answerIndex === selectedIndex);
+        console.log(`isCorrect: ${isCorrect} (Expected index: ${gameState.currentProblem.answerIndex}, Got: ${selectedIndex})`);
+        
+        if (activeBox) activeBox.classList.remove('correct', 'wrong');
+        if (activeBox) void activeBox.offsetWidth; // リフロー
+
+        const buttons = dom.quizOptionsContainer.querySelectorAll('.option-btn');
+        const selectedBtn = buttons[selectedIndex];
+        
+        if(isCorrect) {
+            if (selectedBtn) {
+                selectedBtn.style.boxShadow = "0 0 20px #00ff88, inset 0 0 10px #00ff88";
+            }
+            if (activeBox) activeBox.classList.add('correct');
+            
+            // スコア加算
+            gameState.score += 10;
+            
+            gameState.consecutiveCorrects += 1;
+            updateComboDisplay();
+            
+            if (gameState.consecutiveCorrects % 5 === 0) {
+                if (gameState.lives < 3) {
+                    gameState.lives = 3;
+                    updateLivesDisplay();
+                }
+            }
+            
+            let dmg = 1;
+            let pwrType = 'blue';
+            let textVal = 'HADOUKEN!';
+            
+            const rand = Math.random();
+            if (rand < 0.12) {
+                dmg = 3;
+                pwrType = 'red';
+                textVal = 'SHAKUNETSU!';
+            } else if (rand < 0.32) {
+                dmg = 2;
+                pwrType = 'purple';
+                textVal = 'EX HADOUKEN!';
+            }
+
+            sound.playCorrect();
+            sound.playHadoukenFire(pwrType);
+
+            if (dom.battleStage && pwrType !== 'blue') {
+                dom.battleStage.classList.add('stage-darken-' + pwrType);
+            }
+            if (dom.ryuChar) {
+                dom.ryuChar.className = 'battle-character ryu-hadouken';
+            }
+            if (dom.hadoukenText) {
+                dom.hadoukenText.textContent = textVal;
+                dom.hadoukenText.className = 'hadouken-text text-' + pwrType + ' hadouken-text-active';
+            }
+            if (dom.hadoukenBall) {
+                dom.hadoukenBall.className = 'hadouken-fireball hadouken-' + pwrType + ' hadouken-active';
+            }
+
+            const triggerHit = (damageAmount) => {
+                if (dom.zangiefChar) {
+                    dom.zangiefChar.classList.remove('zangief-idle', 'zangief-damage');
+                    void dom.zangiefChar.offsetWidth;
+                    dom.zangiefChar.classList.add('zangief-damage');
+                }
+                if (dom.hitSpark) {
+                    dom.hitSpark.className = 'hit-spark spark-' + pwrType;
+                    void dom.hitSpark.offsetWidth;
+                    dom.hitSpark.classList.add('spark-active');
+                }
+                if (dom.battleStage) {
+                    let shakeClass = 'screen-shake';
+                    if (pwrType === 'purple') shakeClass = 'screen-shake-medium';
+                    else if (pwrType === 'red') shakeClass = 'screen-shake-heavy';
+                    
+                    dom.battleStage.classList.remove('screen-shake', 'screen-shake-medium', 'screen-shake-heavy');
+                    void dom.battleStage.offsetWidth;
+                    dom.battleStage.classList.add(shakeClass);
+                }
+                sound.playHit(pwrType);
+                
+                gameState.rivalLives = Math.max(0, gameState.rivalLives - damageAmount);
+                updateRivalLivesDisplay();
+            };
+
+            if (pwrType === 'blue') {
+                setTimeout(() => triggerHit(1), 400);
+            } else if (pwrType === 'purple') {
+                setTimeout(() => triggerHit(1), 380);
+                setTimeout(() => triggerHit(1), 520);
+            } else if (pwrType === 'red') {
+                setTimeout(() => triggerHit(1), 320);
+                setTimeout(() => triggerHit(1), 470);
+                setTimeout(() => triggerHit(1), 620);
+            }
+
+            let cleanupDelay = 1000;
+            if (pwrType === 'purple') cleanupDelay = 1100;
+            else if (pwrType === 'red') cleanupDelay = 1250;
+
+            setTimeout(() => {
+                if (dom.ryuChar) dom.ryuChar.className = 'battle-character ryu-idle';
+                if (dom.zangiefChar) dom.zangiefChar.className = 'battle-character zangief-idle';
+                if (dom.hadoukenBall) dom.hadoukenBall.className = 'hadouken-fireball';
+                if (dom.hitSpark) dom.hitSpark.className = 'hit-spark';
+                if (dom.hadoukenText) {
+                    dom.hadoukenText.className = 'hadouken-text';
+                    dom.hadoukenText.textContent = 'HADOUKEN!';
+                }
+                if (dom.battleStage) dom.battleStage.className = 'battle-stage-area';
+                if (activeBox) activeBox.classList.remove('correct');
+                if (selectedBtn) selectedBtn.style.boxShadow = "";
+
+                if (gameState.rivalLives <= 0) {
+                    gameState.rivalKOs += 1;
+                    if (dom.currentScoreDisplay) dom.currentScoreDisplay.textContent = gameState.rivalKOs;
+                    sound.playKOExplosion();
+
+                    gameState.stage += 1;
+                    gameState.rivalMaxLives = Math.min(8, 4 + gameState.stage); 
+                    gameState.rivalLives = gameState.rivalMaxLives;
+                    
+                    if (dom.gameStageDisplay) dom.gameStageDisplay.textContent = gameState.stage;
+                    updateRivalLivesDisplay();
+                }
+                
+                gameState.isTransitioning = false; // 正解時：アニメーション完了後にガード解除
+                nextProblem();
+            }, cleanupDelay);
+
+        } else {
+            // 不正解時
+            sound.playWrong();
+            if (selectedBtn) {
+                selectedBtn.style.boxShadow = "0 0 20px #ff0055, inset 0 0 10px #ff0055";
+            }
+            if (activeBox) activeBox.classList.add('wrong');
+            
+            gameState.lives -= 1;
+            gameState.consecutiveCorrects = 0; 
+            updateComboDisplay();
+            updateLivesDisplay();
+            
+            if (gameState.lives <= 0) {
+                setTimeout(() => {
+                    if (activeBox) activeBox.classList.remove('wrong');
+                    if (selectedBtn) selectedBtn.style.boxShadow = "";
+                    gameState.isTransitioning = false; // 不正解KO時：ガード解除
+                    endGame();
+                }, 500);
+            } else {
+                setTimeout(() => {
+                    if (activeBox) activeBox.classList.remove('wrong');
+                    if (selectedBtn) selectedBtn.style.boxShadow = "";
+                    gameState.isTransitioning = false; // 不正解時：600ms後にガード解除
+                    nextProblem();
+                }, 600);
+            }
+        }
+    } catch (err) {
+        console.error("Critical error in submitAnswer:", err);
+        gameState.isTransitioning = false; // 例外発生時：強制ガード解除で進行不能を防止
     }
 }
 
@@ -805,7 +775,6 @@ function updateComboDisplay() {
         void dom.comboContainer.offsetWidth; 
         dom.comboContainer.classList.add('active');
         
-        // コンボ音の再生
         sound.playCombo(gameState.consecutiveCorrects);
     } else {
         dom.comboContainer.style.display = 'none';
@@ -918,25 +887,29 @@ async function showRanking() {
 
 // --- Save/Resume Logic ---
 function saveGameProgress() {
-    if (gameState && gameState.lives > 0) {
-        const saveObj = {
-            playerName: gameState.playerName,
-            score: gameState.score,
-            lives: gameState.lives,
-            rivalLives: gameState.rivalLives,
-            rivalMaxLives: gameState.rivalMaxLives,
-            stage: gameState.stage,
-            rivalKOs: gameState.rivalKOs,
-            consecutiveCorrects: gameState.consecutiveCorrects
-        };
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(saveObj));
+    try {
+        if (gameState && gameState.lives > 0) {
+            const saveObj = {
+                playerName: gameState.playerName,
+                score: gameState.score,
+                lives: gameState.lives,
+                rivalLives: gameState.rivalLives,
+                rivalMaxLives: gameState.rivalMaxLives,
+                stage: gameState.stage,
+                rivalKOs: gameState.rivalKOs,
+                consecutiveCorrects: gameState.consecutiveCorrects
+            };
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(saveObj));
+        }
+    } catch (e) {
+        console.warn("Failed to save game progress to localStorage:", e);
     }
 }
 
 function checkResumeData() {
-    const saveDataStr = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saveDataStr) {
-        try {
+    try {
+        const saveDataStr = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (saveDataStr) {
             const saveData = JSON.parse(saveDataStr);
             if (saveData && saveData.score !== undefined && saveData.lives > 0) {
                 if (dom.btnResume) {
@@ -945,9 +918,9 @@ function checkResumeData() {
                 }
                 return;
             }
-        } catch (e) {
-            console.error("Failed to parse resume save data", e);
         }
+    } catch (e) {
+        console.warn("Failed to check resume data from localStorage:", e);
     }
     if (dom.btnResume) {
         dom.btnResume.style.display = 'none';
@@ -955,13 +928,13 @@ function checkResumeData() {
 }
 
 function resumeGame() {
-    sound.init(); // 音声コンテキストの初期化
+    sound.init();
     const saveDataStr = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!saveDataStr) return;
     
     try {
         const saveData = JSON.parse(saveDataStr);
-        window.ProblemGenerator.topicName = "割合と比率";
+        window.ProblemGenerator.topicName = "歴史・社会ドリル";
         if (dom.topicNameDisplay) dom.topicNameDisplay.textContent = window.ProblemGenerator.topicName;
         document.title = window.ProblemGenerator.topicName;
         
@@ -977,7 +950,6 @@ function resumeGame() {
             rivalKOs: saveData.rivalKOs !== undefined ? saveData.rivalKOs : 0,
             consecutiveCorrects: saveData.consecutiveCorrects || 0,
             currentProblem: null,
-            userInput: "",
             isTransitioning: false
         };
         
@@ -988,35 +960,15 @@ function resumeGame() {
         updateRivalLivesDisplay();
         updateComboDisplay();
         
-        // キャラクターと演出のリセット
-        if (dom.ryuChar) {
-            dom.ryuChar.className = 'battle-character ryu-idle';
-        }
-        if (dom.zangiefChar) {
-            dom.zangiefChar.className = 'battle-character zangief-idle';
-        }
-        if (dom.hadoukenBall) {
-            dom.hadoukenBall.className = 'hadouken-fireball';
-        }
-        if (dom.hitSpark) {
-            dom.hitSpark.className = 'hit-spark';
-        }
-        if (dom.hadoukenText) {
-            dom.hadoukenText.className = 'hadouken-text';
-        }
-        if (dom.calcArea) {
-            dom.calcArea.classList.remove('screen-shake');
-        }
-        if (dom.battleStage) {
-            dom.battleStage.classList.remove('screen-shake');
-        }
+        if (dom.ryuChar) dom.ryuChar.className = 'battle-character ryu-idle';
+        if (dom.zangiefChar) dom.zangiefChar.className = 'battle-character zangief-idle';
+        if (dom.hadoukenBall) dom.hadoukenBall.className = 'hadouken-fireball';
+        if (dom.hitSpark) dom.hitSpark.className = 'hit-spark';
+        if (dom.hadoukenText) dom.hadoukenText.className = 'hadouken-text';
+        if (dom.battleStage) dom.battleStage.classList.remove('screen-shake');
         
         nextProblem();
         switchScreen('game');
-        setTimeout(() => {
-            resizeCanvas();
-            clearCanvas();
-        }, 10);
         
     } catch(e) {
         console.error("Failed to resume game", e);

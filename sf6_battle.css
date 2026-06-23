@@ -984,7 +984,7 @@ button:active {
 }
 
 .diagram-input-box.target-field {
-    stroke: var(--neon-pink); /* ターゲットはネオンピンクに */
+    stroke: var(--neon-pink);
     stroke-width: 4px;
     animation: glowTargetSF6 1s infinite alternate ease-in-out;
 }
@@ -1011,17 +1011,6 @@ button:active {
     }
 }
 
-@keyframes fadeInArrow {
-    from {
-        opacity: 0;
-        transform: scaleX(0.2);
-    }
-    to {
-        opacity: 1;
-        transform: scaleX(1);
-    }
-}
-
 /* --- 横画面時のレイアウト調整 (Chromebook等) --- */
 @media (min-width: 768px) and (orientation: landscape) {
     .sf6-app-container {
@@ -1034,45 +1023,33 @@ button:active {
     }
 
     #screen-game.active {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) clamp(250px, 30vw, 320px);
-        grid-template-rows: auto auto 1fr;
-        gap: 1.2vw;
+        display: flex;
+        flex-direction: column;
         align-items: stretch;
+        gap: 12px;
         width: 100%;
         height: 100%;
     }
 
-    .game-header { grid-column: 1 / -1; align-self: start; margin-bottom: 0; }
-    .battle-stage-area { grid-column: 1 / -1; height: 110px; margin-bottom: 0; }
-    .problem-board { grid-column: 1 / 2; grid-row: 3 / 4; width: 100%; height: 100%; justify-content: space-between; }
+    .game-header { margin-bottom: 0; }
+    .battle-stage-area { height: 110px; margin-bottom: 0; }
+    .problem-board { width: 100%; flex-grow: 1; }
     
-    .numpad-sf6 { 
-        grid-column: 2 / 3; 
-        grid-row: 3 / 4; 
-        margin-top: 0; 
-        gap: 1.2vh; 
-        height: 100%; 
-        grid-template-rows: repeat(5, 1fr); 
+    .quiz-options-container { 
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-top: 0;
     }
     
-    .numpad-sf6 button { 
-        padding: 0; 
-        height: 100%; 
-        display: flex; 
-        justify-content: center; 
-        align-items: center; 
-        font-size: clamp(1.4rem, 3.5vh, 2.2rem); 
+    .option-btn { 
+        min-height: clamp(55px, 7vh, 70px);
+        padding: 10px 15px !important;
+        font-size: clamp(0.95rem, 2vh, 1.25rem) !important;
     }
-    
-    .numpad-sf6 .color-dark, .numpad-sf6 .color-gold {
-        padding: 0;
-    }
-
-    .question { font-size: clamp(1rem, 2vw, 1.4rem); }
-    .answer-box-sf6 { font-size: clamp(1.6rem, 3.5vw, 2.2rem); height: clamp(38px, 6vh, 52px); }
-    #calc-area { margin-bottom: 0; }
 }
+
 
 /* --- BATTLE STAGE AREA --- */
 .battle-stage-area {
@@ -1396,3 +1373,195 @@ button:active {
     85% { background: #120000; }
     100% { background: rgba(18, 18, 24, 0.45); }
 }
+
+/* --- EXCEL / CSV UPLOAD ZONE --- */
+.upload-container-sf6 {
+    margin: 15px auto;
+    width: 90%;
+    max-width: 420px;
+}
+
+.drop-zone-sf6 {
+    border: 2px dashed #00f3ff;
+    background: rgba(15, 15, 25, 0.7);
+    border-radius: 6px;
+    padding: 15px 10px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    transform: skewX(-6deg);
+    box-shadow: 0 0 8px rgba(0, 243, 255, 0.1), inset 0 0 10px rgba(0, 0, 0, 0.5);
+}
+
+.drop-zone-sf6:hover, .drop-zone-sf6.dragover {
+    border-style: solid;
+    border-color: var(--neon-yellow, #ffe600);
+    background: rgba(25, 25, 40, 0.85);
+    box-shadow: 0 0 15px rgba(255, 230, 0, 0.3), inset 0 0 15px rgba(255, 230, 0, 0.1);
+}
+
+.upload-icon {
+    font-size: 1.8rem;
+    display: block;
+    margin-bottom: 5px;
+    filter: drop-shadow(0 0 5px #00f3ff);
+}
+
+.upload-text {
+    font-family: var(--font-sans);
+    font-size: 0.95rem;
+    font-weight: bold;
+    color: #fff;
+    margin: 0 0 3px 0;
+    text-shadow: 1px 1px 2px #000;
+}
+
+.upload-subtext {
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: #8899aa;
+    margin: 0;
+}
+
+.upload-status-sf6 {
+    margin-top: 8px;
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    font-weight: bold;
+    color: var(--neon-yellow, #ffe600);
+    text-align: center;
+    padding: 5px 10px;
+    background: rgba(0, 255, 136, 0.1);
+    border-left: 3px solid #00ff88;
+    transform: skewX(-6deg);
+    text-shadow: 1px 1px 2px #000;
+    animation: flashGreen 1.5s infinite alternate;
+}
+
+@keyframes flashGreen {
+    0% { box-shadow: 0 0 5px rgba(0, 255, 136, 0.2); }
+    100% { box-shadow: 0 0 12px rgba(0, 255, 136, 0.5); }
+}
+
+/* --- QUIZ OPTIONS CONTAINER (2x2 GRID) --- */
+.quiz-options-container {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    width: 100%;
+    margin-top: 15px;
+}
+
+.option-btn {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: left;
+    padding: 15px 10px !important;
+    min-height: 65px;
+    height: auto;
+    font-size: 1.1rem !important;
+    text-transform: none;
+    cursor: pointer;
+}
+
+.option-num {
+    font-family: var(--font-hud, 'Teko');
+    font-size: 1.5rem;
+    font-weight: 700;
+    background: rgba(0, 0, 0, 0.4);
+    border-radius: 3px;
+    padding: 2px 8px;
+    margin-right: 12px;
+    min-width: 25px;
+    text-align: center;
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.option-text {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    line-height: 1.2;
+    flex-grow: 1;
+    word-break: break-all;
+}
+
+/* レスポンシブ調整：モバイルや狭い幅では1列にする */
+@media (max-width: 480px) {
+    .quiz-options-container {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+    .option-btn {
+        min-height: 55px;
+        padding: 10px 10px !important;
+        font-size: 0.95rem !important;
+    }
+    .option-num {
+        font-size: 1.2rem;
+        margin-right: 8px;
+        padding: 1px 6px;
+    }
+}
+
+/* --- 社会用 大画面問題エリア --- */
+.question-container-full {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    min-height: 200px;
+    background: rgba(10, 10, 15, 0.75);
+    border: 3px solid rgba(255, 255, 255, 0.15);
+    border-left: 6px solid var(--neon-pink, #ff0077);
+    padding: 20px 30px;
+    box-sizing: border-box;
+    position: relative;
+    overflow-y: auto;
+    max-height: 250px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5), inset 0 0 15px rgba(0, 0, 0, 0.8);
+    transition: all 0.2s ease;
+}
+
+.question-text-large {
+    font-family: var(--font-sans);
+    font-size: 1.8rem;
+    font-weight: 900;
+    color: #ffffff;
+    text-align: center;
+    line-height: 1.5;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.9);
+    width: 100%;
+    word-break: break-all;
+}
+
+/* 問題ボードの正誤判定フラッシュ（activeBoxの代替） */
+.problem-board.correct .question-container-full {
+    background: rgba(0, 136, 68, 0.85);
+    border-color: #00ff88;
+    box-shadow: 0 0 25px rgba(0, 255, 136, 0.4), inset 0 0 15px rgba(0, 255, 136, 0.2);
+    animation: sf6Punch 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+}
+
+.problem-board.wrong .question-container-full {
+    background: rgba(153, 0, 34, 0.85);
+    border-color: #ff0044;
+    box-shadow: 0 0 25px rgba(255, 0, 68, 0.4), inset 0 0 15px rgba(255, 0, 68, 0.2);
+    animation: sf6Shake 0.25s linear forwards;
+}
+
+/* モバイルでの文字サイズ調整 */
+@media (max-width: 480px) {
+    .question-container-full {
+        min-height: 150px;
+        padding: 15px;
+    }
+    .question-text-large {
+        font-size: 1.25rem;
+        line-height: 1.4;
+    }
+}
+
